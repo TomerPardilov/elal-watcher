@@ -34,7 +34,20 @@ Every check also appends a line to `watcher.log`.
 | `ORIGIN_CODE` | `DXB` | IATA code |
 | `DESTINATION_CODE` | `TLV` | IATA code |
 | `TRAVEL_DATES` | `2026-10-02,2026-10-03,2026-10-04` | comma-separated `YYYY-MM-DD` |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | empty | Optional. Telegram is blocked on some corporate networks; failures are logged and ignored. |
+| `TELEGRAM_BOT_TOKEN` | empty | Optional. Enables the Telegram bot. |
+| `TELEGRAM_CHAT_ID` | empty | Optional. Chat id that is always subscribed. |
+| `SUBSCRIBERS_FILE` / `SUBSCRIBERS_KEY` | `subscribers.json` / empty | Where subscribers are stored; with a 64-hex-char key the file is AES-256-GCM encrypted. |
+| `GIT_PERSIST` | unset | `1` commits + pushes the subscribers file on every change (used in GitHub Actions). |
+
+## Telegram bot
+
+Anyone can open the bot and send:
+
+- `/start` – subscribe (gets a welcome plus the latest result immediately)
+- `/status` – latest result
+- `/stop` – unsubscribe
+
+Every check result is broadcast to all subscribers. Only one process may poll the bot at a time (Telegram `getUpdates` rejects a second poller with HTTP 409), so don't run `npm start` locally while the GitHub Actions job is running.
 
 ## Notes
 

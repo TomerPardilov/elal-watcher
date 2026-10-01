@@ -1,6 +1,7 @@
 node_modules/
 .env
 watcher.log
+subscribers.json
 debug-*.json
 debug-*.png
 .browser-profile/

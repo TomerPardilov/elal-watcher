@@ -2,12 +2,14 @@ import 'dotenv/config';
 import { execFile } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { TelegramBot, escapeHtml } from './telegram.js';
 
 const SEAT_AVAILABILITY_URL = 'https://www.elal.com/eng/seat-availability';
 const FLIGHTS_API_PATTERN = /\/api\/seatavailability\/lang\/\w+\/flights/i;
 // Headless Chromium reports "HeadlessChrome/...", which the EL AL WAF denies outright (HTTP 492).
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
 const POLL_INTERVAL_MS = 60_000;
+const COMMAND_POLL_MS = 5_000;
 const LOG_FILE = 'watcher.log';
 
 interface FlightDate {
@@ -45,11 +47,6 @@ interface WatchConfig {
   originCode: string;
   destinationCode: string;
   travelDates: string[]; // YYYY-MM-DD
-}
-
-interface TelegramConfig {
-  token: string;
-  chatId: string;
 }
 
 interface DateResult {
@@ -92,10 +89,17 @@ function parseWatchConfig(): WatchConfig {
   };
 }
 
-function parseTelegramConfig(): TelegramConfig | null {
+function createTelegramBot(): TelegramBot | null {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  return token && chatId ? { token, chatId } : null;
+  if (!token) return null;
+  return new TelegramBot({
+    token,
+    seedChatId: process.env.TELEGRAM_CHAT_ID,
+    subscribersFile: process.env.SUBSCRIBERS_FILE ?? 'subscribers.json',
+    encryptionKey: process.env.SUBSCRIBERS_KEY,
+    gitPersist: process.env.GIT_PERSIST === '1',
+    log
+  });
 }
 
 // API uses "DD.MM" keys
@@ -162,10 +166,6 @@ function evaluate(data: SeatAvailabilityResponse, config: WatchConfig): CheckRes
   };
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 function formatMessage(result: CheckResult, config: WatchConfig): Message {
   const route = `${config.originCode} → ${config.destinationCode}`;
   const found = result.dates.some(d => d.availableFlights.length > 0);
@@ -224,42 +224,27 @@ function sendDesktopNotification(title: string, body: string, urgent: boolean): 
   });
 }
 
-async function sendTelegram(config: TelegramConfig, html: string): Promise<void> {
-  const response = await fetch(`https://api.telegram.org/bot${config.token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: config.chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true }),
-    signal: AbortSignal.timeout(10_000)
-  });
-  if (!response.ok) {
-    throw new Error(`Telegram HTTP ${response.status}`);
-  }
-}
-
 function log(line: string): void {
   const stamped = `[${new Date().toISOString()}] ${line}`;
   console.log(stamped);
   appendFileSync(LOG_FILE, stamped + '\n');
 }
 
-async function notify(message: Message, telegram: TelegramConfig | null): Promise<void> {
+async function notify(message: Message, bot: TelegramBot | null): Promise<void> {
   await sendDesktopNotification(message.title, message.plain, message.found);
-  if (telegram) {
-    try {
-      await sendTelegram(telegram, message.html);
-    } catch (error) {
-      log(`telegram failed (ignored): ${error instanceof Error ? error.message : String(error)}`);
-    }
+  if (bot) {
+    bot.setLastStatus(message.html);
+    await bot.broadcast(message.html);
   }
 }
 
-async function runOnce(config: WatchConfig, telegram: TelegramConfig | null): Promise<void> {
+async function runOnce(config: WatchConfig, bot: TelegramBot | null): Promise<void> {
   try {
     const data = await fetchSeatAvailability();
     const result = evaluate(data, config);
     const message = formatMessage(result, config);
-    log(`${message.title} | ${message.plain.replace(/\n+/g, ' | ')}`);
-    await notify(message, telegram);
+    log(`${message.title} | ${message.plain.replace(/\n+/g, ' | ')} | subscribers=${bot?.subscriberCount ?? 0}`);
+    await notify(message, bot);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     log(`check failed: ${reason}`);
@@ -269,28 +254,41 @@ async function runOnce(config: WatchConfig, telegram: TelegramConfig | null): Pr
       title: 'EL AL watcher: check failed',
       plain: short,
       html: `⚠️ <b>Check failed</b>\n<code>${escapeHtml(short)}</code>\n<i>Will retry in a minute</i>`
-    }, telegram);
+    }, bot);
+  }
+}
+
+// Sleeps until the next check while answering /start, /stop, /status promptly.
+async function waitAndServeCommands(bot: TelegramBot | null, ms: number): Promise<void> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, Math.min(COMMAND_POLL_MS, until - Date.now())));
+    if (bot) {
+      await bot.pollCommands().catch(error => {
+        log(`telegram poll failed (ignored): ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
   }
 }
 
 async function main(): Promise<void> {
   const config = parseWatchConfig();
-  const telegram = parseTelegramConfig();
+  const bot = createTelegramBot();
   const once = process.argv.includes('--once');
   // Lets a time-limited host (e.g. a GitHub Actions job) stop before being killed.
   const maxRunMinutes = Number(process.env.MAX_RUN_MINUTES ?? 0);
   const deadline = maxRunMinutes > 0 ? Date.now() + maxRunMinutes * 60_000 : Infinity;
 
-  log(`watching ${config.originCode} -> ${config.destinationCode} on ${config.travelDates.join(', ')}, every ${POLL_INTERVAL_MS / 1000}s, telegram=${telegram ? 'on' : 'off'}${maxRunMinutes > 0 ? `, max ${maxRunMinutes} min` : ''}`);
+  log(`watching ${config.originCode} -> ${config.destinationCode} on ${config.travelDates.join(', ')}, every ${POLL_INTERVAL_MS / 1000}s, telegram=${bot ? `on (${bot.subscriberCount} subscribers)` : 'off'}${maxRunMinutes > 0 ? `, max ${maxRunMinutes} min` : ''}`);
 
   do {
-    await runOnce(config, telegram);
+    await runOnce(config, bot);
     if (once) break;
     if (Date.now() + POLL_INTERVAL_MS > deadline) {
       log('max run time reached, exiting');
       break;
     }
-    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    await waitAndServeCommands(bot, POLL_INTERVAL_MS);
   } while (true);
 }
 

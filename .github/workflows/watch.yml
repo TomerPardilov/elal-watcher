@@ -16,6 +16,9 @@ concurrency:
   group: elal-watcher
   cancel-in-progress: false
 
+permissions:
+  contents: write
+
 jobs:
   watch:
     runs-on: ubuntu-latest
@@ -23,6 +26,9 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      SUBSCRIBERS_KEY: ${{ secrets.SUBSCRIBERS_KEY }}
+      SUBSCRIBERS_FILE: subscribers.enc
+      GIT_PERSIST: "1"
       ORIGIN_CODE: DXB
       DESTINATION_CODE: TLV
       TRAVEL_DATES: "2026-10-02,2026-10-03,2026-10-04"
