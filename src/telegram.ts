@@ -64,7 +64,7 @@ export class TelegramBot {
         }
         await this.sendSafe(chatId,
           `👋 Hi ${escapeHtml(name)}! ${isNew ? 'You are now <b>subscribed</b>' : 'You are already subscribed'} to EL AL seat alerts.\n` +
-          `You will get an update <b>every minute</b>.\n\n` +
+          `You will be notified <b>only when seats appear</b>.\n\n` +
           `Commands: /status – current result · /stop – unsubscribe`);
         if (this.lastStatusHtml) await this.sendSafe(chatId, this.lastStatusHtml);
       } else if (command === '/stop') {
