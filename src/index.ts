@@ -44,7 +44,7 @@ interface SeatAvailabilityResponse {
 interface WatchConfig {
   originCode: string;
   destinationCode: string;
-  travelDate: string; // YYYY-MM-DD
+  travelDates: string[]; // YYYY-MM-DD
 }
 
 interface TelegramConfig {
@@ -52,24 +52,43 @@ interface TelegramConfig {
   chatId: string;
 }
 
+interface DateResult {
+  travelDate: string; // YYYY-MM-DD
+  apiDate: string; // DD.MM
+  inRange: boolean;
+  availableFlights: Array<{ flightNumber: string; depTime: string; seatCount?: number; seatType?: string }>;
+}
+
 interface CheckResult {
   runDateTime: string;
   originListed: boolean;
-  dateInRange: boolean;
-  dateRange: string[];
-  availableFlights: Array<{ flightNumber: string; depTime: string; seatCount?: number; seatType?: string }>;
   totalRouteFlights: number;
+  dateRange: string[];
+  dates: DateResult[];
+}
+
+interface Message {
+  title: string;
+  plain: string;
+  html: string;
+  found: boolean;
 }
 
 function parseWatchConfig(): WatchConfig {
-  const travelDate = process.env.TRAVEL_DATE ?? '2026-10-02';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(travelDate)) {
-    throw new Error(`TRAVEL_DATE must use YYYY-MM-DD format, got: ${travelDate}`);
+  const raw = process.env.TRAVEL_DATES ?? process.env.TRAVEL_DATE ?? '2026-10-02,2026-10-03,2026-10-04';
+  const travelDates = raw.split(',').map(d => d.trim()).filter(Boolean);
+  for (const d of travelDates) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+      throw new Error(`TRAVEL_DATES must be comma-separated YYYY-MM-DD values, got: ${d}`);
+    }
+  }
+  if (travelDates.length === 0) {
+    throw new Error('TRAVEL_DATES is empty');
   }
   return {
     originCode: (process.env.ORIGIN_CODE ?? 'DXB').toUpperCase(),
     destinationCode: (process.env.DESTINATION_CODE ?? 'TLV').toUpperCase(),
-    travelDate
+    travelDates
   };
 }
 
@@ -113,7 +132,6 @@ async function fetchSeatAvailability(): Promise<SeatAvailabilityResponse> {
 }
 
 function evaluate(data: SeatAvailabilityResponse, config: WatchConfig): CheckResult {
-  const apiDate = toApiDate(config.travelDate);
   const groups = config.destinationCode === 'TLV' ? data.flightsToIsrael : data.flightsFromIsrael;
   const group = groups.find(g => g.origin === config.originCode)
     ?? groups.find(g => g.flights.some(f => f.routeFrom === config.originCode && f.routeTo === config.destinationCode));
@@ -121,49 +139,81 @@ function evaluate(data: SeatAvailabilityResponse, config: WatchConfig): CheckRes
     f => f.routeFrom === config.originCode && f.routeTo === config.destinationCode
   );
 
-  const availableFlights = routeFlights.flatMap(f =>
-    f.flightsDates
-      .filter(d => d.flightsDate === apiDate && (d.seatCount ?? 0) > 0)
-      .map(d => ({ flightNumber: f.flightNumber, depTime: f.segmentDepTime, seatCount: d.seatCount, seatType: d.seatType }))
-  );
+  const dates = config.travelDates.map(travelDate => {
+    const apiDate = toApiDate(travelDate);
+    return {
+      travelDate,
+      apiDate,
+      inRange: data.dateRange.dates.includes(apiDate),
+      availableFlights: routeFlights.flatMap(f =>
+        f.flightsDates
+          .filter(d => d.flightsDate === apiDate && (d.seatCount ?? 0) > 0)
+          .map(d => ({ flightNumber: f.flightNumber, depTime: f.segmentDepTime, seatCount: d.seatCount, seatType: d.seatType }))
+      )
+    };
+  });
 
   return {
     runDateTime: data.runDateTime,
     originListed: routeFlights.length > 0,
-    dateInRange: data.dateRange.dates.includes(apiDate),
+    totalRouteFlights: routeFlights.length,
     dateRange: data.dateRange.dates,
-    availableFlights,
-    totalRouteFlights: routeFlights.length
+    dates
   };
 }
 
-function formatMessage(result: CheckResult, config: WatchConfig): { title: string; body: string; found: boolean } {
-  const route = `${config.originCode} -> ${config.destinationCode}`;
-  const date = toApiDate(config.travelDate);
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-  if (result.availableFlights.length > 0) {
-    const lines = result.availableFlights.map(
-      f => `${f.flightNumber} dep ${f.depTime} - ${f.seatCount} seat(s) [${f.seatType}]`
-    );
-    return {
-      found: true,
-      title: `EL AL: ${route} seats on ${date}!`,
-      body: [`Book now: ${SEAT_AVAILABILITY_URL}`, ...lines, `(EL AL data as of ${result.runDateTime})`].join('\n')
-    };
-  }
+function formatMessage(result: CheckResult, config: WatchConfig): Message {
+  const route = `${config.originCode} → ${config.destinationCode}`;
+  const found = result.dates.some(d => d.availableFlights.length > 0);
+  const window = `${result.dateRange[0]} – ${result.dateRange.at(-1)}`;
 
-  let reason: string;
-  if (!result.dateInRange) {
-    reason = `${date} not yet in EL AL's published window (${result.dateRange[0]} - ${result.dateRange.at(-1)})`;
-  } else if (!result.originListed) {
-    reason = `${config.originCode} is not listed among EL AL origins at all`;
+  const plain: string[] = [];
+  const html: string[] = [];
+
+  if (found) {
+    plain.push(`SEATS FOUND ${route}`);
+    html.push(`🟢🟢🟢 <b>SEATS FOUND</b> 🟢🟢🟢`, `✈️ <b>${escapeHtml(route)}</b>`, '');
   } else {
-    reason = `${result.totalRouteFlights} ${route} flight(s) listed, none with seats on ${date}`;
+    plain.push(`No ${route} seats yet`);
+    html.push(`🔴 <b>No seats yet</b>  ✈️ <b>${escapeHtml(route)}</b>`, '');
   }
+
+  for (const d of result.dates) {
+    if (d.availableFlights.length > 0) {
+      plain.push(`[OK] ${d.apiDate}:`);
+      html.push(`✅ <b>${d.apiDate}</b>`);
+      for (const f of d.availableFlights) {
+        plain.push(`   ${f.flightNumber} dep ${f.depTime} - ${f.seatCount} seat(s) [${f.seatType}]`);
+        html.push(`   🎟 <code>${escapeHtml(f.flightNumber)}</code> dep <b>${escapeHtml(f.depTime)}</b> — <b>${f.seatCount}</b> seat(s) [${escapeHtml(f.seatType ?? '?')}]`);
+      }
+    } else if (!d.inRange) {
+      plain.push(`[--] ${d.apiDate}: not yet in EL AL window (${window})`);
+      html.push(`⚪ <b>${d.apiDate}</b> — not yet in EL AL window (${escapeHtml(window)})`);
+    } else if (!result.originListed) {
+      plain.push(`[X] ${d.apiDate}: ${config.originCode} not listed as an EL AL origin`);
+      html.push(`❌ <b>${d.apiDate}</b> — ${escapeHtml(config.originCode)} not listed as an EL AL origin`);
+    } else {
+      plain.push(`[X] ${d.apiDate}: ${result.totalRouteFlights} flight(s) listed, no seats`);
+      html.push(`❌ <b>${d.apiDate}</b> — ${result.totalRouteFlights} flight(s) listed, no seats`);
+    }
+  }
+
+  if (found) {
+    plain.push('', `Book now: ${SEAT_AVAILABILITY_URL}`);
+    html.push('', `👉 <a href="${SEAT_AVAILABILITY_URL}">BOOK NOW</a>`);
+  }
+  plain.push(`(EL AL data as of ${result.runDateTime})`);
+  html.push('', `🕒 <i>EL AL data as of ${escapeHtml(result.runDateTime)}</i>`);
+
   return {
-    found: false,
-    title: `EL AL: no ${route} seats yet`,
-    body: `${reason}\n(EL AL data as of ${result.runDateTime})`
+    found,
+    title: plain[0],
+    plain: plain.slice(1).join('\n').trim(),
+    html: html.join('\n')
   };
 }
 
@@ -174,11 +224,11 @@ function sendDesktopNotification(title: string, body: string, urgent: boolean): 
   });
 }
 
-async function sendTelegram(config: TelegramConfig, text: string): Promise<void> {
+async function sendTelegram(config: TelegramConfig, html: string): Promise<void> {
   const response = await fetch(`https://api.telegram.org/bot${config.token}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: config.chatId, text, disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: config.chatId, text: html, parse_mode: 'HTML', disable_web_page_preview: true }),
     signal: AbortSignal.timeout(10_000)
   });
   if (!response.ok) {
@@ -192,11 +242,11 @@ function log(line: string): void {
   appendFileSync(LOG_FILE, stamped + '\n');
 }
 
-async function notify(title: string, body: string, urgent: boolean, telegram: TelegramConfig | null): Promise<void> {
-  await sendDesktopNotification(title, body, urgent);
+async function notify(message: Message, telegram: TelegramConfig | null): Promise<void> {
+  await sendDesktopNotification(message.title, message.plain, message.found);
   if (telegram) {
     try {
-      await sendTelegram(telegram, `${title}\n${body}`);
+      await sendTelegram(telegram, message.html);
     } catch (error) {
       log(`telegram failed (ignored): ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -208,12 +258,18 @@ async function runOnce(config: WatchConfig, telegram: TelegramConfig | null): Pr
     const data = await fetchSeatAvailability();
     const result = evaluate(data, config);
     const message = formatMessage(result, config);
-    log(`${message.title} | ${message.body.replace(/\n/g, ' | ')}`);
-    await notify(message.title, message.body, message.found, telegram);
+    log(`${message.title} | ${message.plain.replace(/\n+/g, ' | ')}`);
+    await notify(message, telegram);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     log(`check failed: ${reason}`);
-    await notify('EL AL watcher: check failed', reason.slice(0, 300), false, telegram);
+    const short = reason.slice(0, 300);
+    await notify({
+      found: false,
+      title: 'EL AL watcher: check failed',
+      plain: short,
+      html: `⚠️ <b>Check failed</b>\n<code>${escapeHtml(short)}</code>\n<i>Will retry in a minute</i>`
+    }, telegram);
   }
 }
 
@@ -225,7 +281,7 @@ async function main(): Promise<void> {
   const maxRunMinutes = Number(process.env.MAX_RUN_MINUTES ?? 0);
   const deadline = maxRunMinutes > 0 ? Date.now() + maxRunMinutes * 60_000 : Infinity;
 
-  log(`watching ${config.originCode} -> ${config.destinationCode} on ${config.travelDate}, every ${POLL_INTERVAL_MS / 1000}s, telegram=${telegram ? 'on' : 'off'}${maxRunMinutes > 0 ? `, max ${maxRunMinutes} min` : ''}`);
+  log(`watching ${config.originCode} -> ${config.destinationCode} on ${config.travelDates.join(', ')}, every ${POLL_INTERVAL_MS / 1000}s, telegram=${telegram ? 'on' : 'off'}${maxRunMinutes > 0 ? `, max ${maxRunMinutes} min` : ''}`);
 
   do {
     await runOnce(config, telegram);

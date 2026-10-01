@@ -33,7 +33,7 @@ Every check also appends a line to `watcher.log`.
 |---|---|---|
 | `ORIGIN_CODE` | `DXB` | IATA code |
 | `DESTINATION_CODE` | `TLV` | IATA code |
-| `TRAVEL_DATE` | `2026-10-02` | `YYYY-MM-DD` |
+| `TRAVEL_DATES` | `2026-10-02,2026-10-03,2026-10-04` | comma-separated `YYYY-MM-DD` |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | empty | Optional. Telegram is blocked on some corporate networks; failures are logged and ignored. |
 
 ## Notes

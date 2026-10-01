@@ -25,7 +25,7 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       ORIGIN_CODE: DXB
       DESTINATION_CODE: TLV
-      TRAVEL_DATE: "2026-10-02"
+      TRAVEL_DATES: "2026-10-02,2026-10-03,2026-10-04"
       MAX_RUN_MINUTES: 350
     steps:
       - uses: actions/checkout@v4
