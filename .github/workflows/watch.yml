@@ -1,0 +1,43 @@
+name: EL AL watcher
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "test = one check and exit; watch = loop for ~5h50m"
+        default: test
+        type: choice
+        options: [test, watch]
+  schedule:
+    # Each job loops for ~5h50m; restarting every 6h gives near-continuous coverage.
+    - cron: "0 */6 * * *"
+
+concurrency:
+  group: elal-watcher
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      ORIGIN_CODE: DXB
+      DESTINATION_CODE: TLV
+      TRAVEL_DATE: "2026-10-02"
+      MAX_RUN_MINUTES: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: One-shot test
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'test'
+        run: npm run check
+      - name: Watch loop
+        if: github.event_name == 'schedule' || inputs.mode == 'watch'
+        run: npm start

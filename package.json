@@ -1,0 +1,20 @@
+{
+  "name": "elal-flight-watcher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "check": "tsx src/index.ts --once",
+    "watch": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "playwright": "^1.49.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
