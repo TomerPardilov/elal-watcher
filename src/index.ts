@@ -234,7 +234,8 @@ async function notify(message: Message, bot: TelegramBot | null): Promise<void> 
   await sendDesktopNotification(message.title, message.plain, message.found);
   if (bot) {
     bot.setLastStatus(message.html);
-    await bot.broadcast(message.html);
+    // Only seat alerts are pushed; "no seats" / "check failed" stay available via /status.
+    if (message.found) await bot.broadcast(message.html);
   }
 }
 
