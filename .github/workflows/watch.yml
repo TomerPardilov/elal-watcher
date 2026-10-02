@@ -9,8 +9,9 @@ on:
         type: choice
         options: [test, watch]
   schedule:
-    # Each job loops for ~5h50m; restarting every 6h gives near-continuous coverage.
-    - cron: "0 */6 * * *"
+    # Hourly: with the concurrency group below a replacement run is always queued and
+    # starts the moment the current ~5h50m job ends (or crashes), so there is no gap.
+    - cron: "0 * * * *"
 
 concurrency:
   group: elal-watcher
@@ -46,4 +47,5 @@ jobs:
         run: npm run check
       - name: Watch loop
         if: github.event_name == 'schedule' || inputs.mode == 'watch'
-        run: npm start
+        # Retry once if the process dies unexpectedly; the queued hourly run covers anything beyond that.
+        run: npm start || npm start

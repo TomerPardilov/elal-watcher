@@ -283,6 +283,11 @@ async function waitAndServeCommands(bot: TelegramBot | null, ms: number): Promis
 
 async function main(): Promise<void> {
   const config = parseWatchConfig();
+  const lastDate = [...config.travelDates].sort().at(-1)!;
+  if (new Date().toISOString().slice(0, 10) > lastDate) {
+    log(`all travel dates are in the past (last ${lastDate}), nothing to watch`);
+    return;
+  }
   const bot = createTelegramBot();
   const once = process.argv.includes('--once');
   // Lets a time-limited host (e.g. a GitHub Actions job) stop before being killed.
