@@ -69,10 +69,11 @@ interface Message {
   plain: string;
   html: string;
   found: boolean;
+  alertKey: string; // identifies the set of available seats, to avoid re-sending the same alert
 }
 
 function parseWatchConfig(): WatchConfig {
-  const raw = process.env.TRAVEL_DATES ?? process.env.TRAVEL_DATE ?? '2026-10-02,2026-10-03,2026-10-04';
+  const raw = process.env.TRAVEL_DATES ?? process.env.TRAVEL_DATE ?? '2026-10-02,2026-10-03,2026-10-04,2026-10-05,2026-10-06,2026-10-07,2026-10-08,2026-10-09';
   const travelDates = raw.split(',').map(d => d.trim()).filter(Boolean);
   for (const d of travelDates) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
@@ -211,6 +212,7 @@ function formatMessage(result: CheckResult, config: WatchConfig): Message {
 
   return {
     found,
+    alertKey: result.dates.flatMap(d => d.availableFlights.map(f => `${d.apiDate}/${f.flightNumber}/${f.depTime}/${f.seatCount}`)).sort().join(','),
     title: plain[0],
     plain: plain.slice(1).join('\n').trim(),
     html: html.join('\n')
@@ -230,13 +232,19 @@ function log(line: string): void {
   appendFileSync(LOG_FILE, stamped + '\n');
 }
 
+let lastAlertKey = '';
+
 async function notify(message: Message, bot: TelegramBot | null): Promise<void> {
   await sendDesktopNotification(message.title, message.plain, message.found);
   if (bot) {
     bot.setLastStatus(message.html);
-    // Only seat alerts are pushed; "no seats" / "check failed" stay available via /status.
-    if (message.found) await bot.broadcast(message.html);
+    // Push only when seats exist AND the available set changed; otherwise it's available via /status.
+    if (message.found && message.alertKey !== lastAlertKey) {
+      await bot.broadcast(message.html);
+      log(`broadcast seat alert to ${bot.subscriberCount} subscriber(s)`);
+    }
   }
+  lastAlertKey = message.alertKey;
 }
 
 async function runOnce(config: WatchConfig, bot: TelegramBot | null): Promise<void> {
@@ -252,6 +260,7 @@ async function runOnce(config: WatchConfig, bot: TelegramBot | null): Promise<vo
     const short = reason.slice(0, 300);
     await notify({
       found: false,
+      alertKey: lastAlertKey,
       title: 'EL AL watcher: check failed',
       plain: short,
       html: `⚠️ <b>Check failed</b>\n<code>${escapeHtml(short)}</code>\n<i>Will retry in a minute</i>`
